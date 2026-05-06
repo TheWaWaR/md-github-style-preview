@@ -116,7 +116,7 @@ class RenderState:
     """Process-wide renderer state (single instance, mutated under the asyncio loop)."""
     cooldown_until: float = 0.0
     client: Optional[httpx.AsyncClient] = None  # set in lifespan startup
-    cache: dict[tuple[Path, float], str] = field(default_factory=dict)  # (abs_path, mtime) -> html
+    cache: dict[tuple[Path, float], tuple[str, str]] = field(default_factory=dict)  # (abs_path, mtime) -> (html, mode)
 
 
 STATE = RenderState()
@@ -151,6 +151,36 @@ async def render(text: str) -> tuple[str, str]:
                 STATE.cooldown_until = now + COOLDOWN_TRANSIENT_S
     # Cooldown active or API just failed → local
     return render_local(text), "local"
+
+
+async def render_path(abs_path: Path) -> tuple[str, str]:
+    """Render the markdown file at abs_path. Returns (html, mode).
+
+    Uses the (abs_path, mtime) cache. The FileWatcher invalidates by path
+    explicitly because some filesystems / atomic-write strategies leave mtime
+    unchanged across content changes — DO NOT remove that invalidation.
+    """
+    mtime = abs_path.stat().st_mtime
+    key = (abs_path, mtime)
+    if key in STATE.cache:
+        html, mode = STATE.cache[key]
+        return html, mode
+    text = abs_path.read_text(encoding="utf-8")
+    html, mode = await render(text)
+    STATE.cache[key] = (html, mode)
+    return html, mode
+
+
+def invalidate_cache_for(abs_path: Path) -> None:
+    """Remove ALL cache entries for a path, regardless of mtime.
+
+    Removing only the (path, current_mtime) entry is insufficient: if a
+    file was reverted to an older mtime that's still cached (e.g. via
+    `git checkout`), the stale entry would survive.
+    """
+    to_drop = [k for k in STATE.cache if k[0] == abs_path]
+    for k in to_drop:
+        STATE.cache.pop(k, None)
 
 
 # ----- FastAPI app -----

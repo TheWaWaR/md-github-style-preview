@@ -104,9 +104,71 @@ def render_local(text: str) -> str:
     )
 
 
+# ----- Renderer: GitHub API + cooldown -----
+
+GITHUB_API_URL = "https://api.github.com/markdown"
+COOLDOWN_RATE_LIMIT_S = 600.0   # 10 min for 403/429
+COOLDOWN_TRANSIENT_S = 30.0     # 30s for network/5xx
+
+
+@dataclass
+class RenderState:
+    """Process-wide renderer state (single instance, mutated under the asyncio loop)."""
+    cooldown_until: float = 0.0
+    client: Optional[httpx.AsyncClient] = None  # set in lifespan startup
+    cache: dict[tuple[Path, float], str] = field(default_factory=dict)  # (abs_path, mtime) -> html
+
+
+STATE = RenderState()
+
+
+async def _render_via_api(text: str) -> str:
+    assert STATE.client is not None, "httpx client not initialized"
+    headers: dict[str, str] = {}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = await STATE.client.post(GITHUB_API_URL, json={"text": text, "mode": "gfm"}, headers=headers)
+    if r.status_code in (403, 429):
+        STATE.cooldown_until = time.monotonic() + COOLDOWN_RATE_LIMIT_S
+        raise httpx.HTTPStatusError("rate limited", request=r.request, response=r)
+    if r.status_code >= 500:
+        STATE.cooldown_until = time.monotonic() + COOLDOWN_TRANSIENT_S
+        raise httpx.HTTPStatusError("server error", request=r.request, response=r)
+    r.raise_for_status()
+    return r.text
+
+
+async def render(text: str) -> tuple[str, str]:
+    """Render markdown. Returns (html, mode) where mode is "api" or "local"."""
+    now = time.monotonic()
+    if now >= STATE.cooldown_until:
+        try:
+            return await _render_via_api(text), "api"
+        except (httpx.HTTPError, httpx.TimeoutException):
+            # Network / timeout / 5xx — short cooldown if not already rate-limited
+            if STATE.cooldown_until <= now:
+                STATE.cooldown_until = now + COOLDOWN_TRANSIENT_S
+    # Cooldown active or API just failed → local
+    return render_local(text), "local"
+
+
 # ----- FastAPI app -----
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: client first (used by render()); observer comes in Task 11
+    STATE.client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+    try:
+        yield
+    finally:
+        # Shutdown
+        if STATE.client is not None:
+            await STATE.client.aclose()
+            STATE.client = None
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # ----- Routes: index and file enumeration -----

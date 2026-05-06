@@ -455,6 +455,29 @@ async def github_markdown_css() -> Response:
 
 # ----- Entrypoint -----
 
+def _check_port_available(host: str, port: int) -> None:
+    """Probe-bind so we can fail fast with a friendly message before uvicorn starts.
+
+    Uvicorn catches the bind OSError internally and prints its own ERROR log,
+    so we can't catch it from `uvicorn.run()`. There's a tiny TOCTOU window
+    between this probe and uvicorn's real bind, acceptable for a local dev tool.
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((host, port))
+    except OSError as e:
+        if getattr(e, "errno", None) in (48, 98) or "address already in use" in str(e).lower():
+            print(
+                f"error: port {port} is already in use; pass --port to choose another",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
+    finally:
+        s.close()
+
+
 def main() -> None:
     global ROOT
     args = parse_args()
@@ -462,6 +485,15 @@ def main() -> None:
     if not ROOT.is_dir():
         print(f"error: {ROOT} is not a directory", file=sys.stderr)
         sys.exit(1)
+
+    _check_port_available(args.host, args.port)
+
+    # Browser auto-open: 0.5s delay so uvicorn has time to bind.
+    if not args.no_browser:
+        display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+        url = f"http://{display_host}:{args.port}/"
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

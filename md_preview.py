@@ -250,6 +250,74 @@ async def files_json() -> JSONResponse:
     return JSONResponse({"files": list_markdown_files()})
 
 
+VIEW_TEMPLATE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>{title}</title>
+<link rel="stylesheet" href="/static/github-markdown.css">
+<style>
+  body {{ box-sizing: border-box; margin: 0; padding: 2rem; }}
+  .markdown-body {{ max-width: 980px; margin: 0 auto; }}
+  #banner {{ position: fixed; top: 0; left: 0; right: 0; padding: 0.5rem 1rem;
+             background: #fff8c5; border-bottom: 1px solid #d4a72c; display: none; }}
+  #banner button {{ float: right; background: none; border: none; cursor: pointer; }}
+</style>
+</head><body>
+<div id="banner"><span id="banner-text"></span><button onclick="document.getElementById('banner').style.display='none'">×</button></div>
+<article id="content" class="markdown-body">{html}</article>
+<script>
+  const PATH = {path_json};
+  const article = document.getElementById('content');
+  const banner = document.getElementById('banner');
+  const bannerText = document.getElementById('banner-text');
+
+  function showBanner(msg) {{ bannerText.textContent = msg; banner.style.display = 'block'; }}
+
+  async function refresh() {{
+    const r = await fetch('/raw/' + PATH);
+    if (!r.ok) {{ article.innerHTML = '<p>Render error: ' + r.status + '</p>'; return; }}
+    const mode = r.headers.get('X-Render-Mode');
+    if (mode === 'local') showBanner('API rate-limited, using local renderer');
+    const scrollY = window.scrollY;
+    article.innerHTML = await r.text();
+    window.scrollTo(0, scrollY);
+  }}
+
+  const es = new EventSource('/events');
+  es.addEventListener('message', (e) => {{
+    const evt = JSON.parse(e.data);
+    if (evt.path === PATH && evt.event === 'modified') refresh();
+  }});
+</script>
+</body></html>
+"""
+
+
+@app.get("/view/{path:path}", response_class=HTMLResponse)
+async def view(path: str) -> str:
+    abs_path = safe_resolve(path)
+    if not is_markdown(abs_path):
+        raise HTTPException(status_code=404, detail="not a markdown file")
+    html, mode = await render_path(abs_path)
+    return VIEW_TEMPLATE.format(
+        title=path,
+        html=html,
+        path_json=json.dumps(path),
+    )
+
+
+@app.get("/raw/{path:path}")
+async def raw(path: str) -> Response:
+    abs_path = safe_resolve(path)
+    if not is_markdown(abs_path):
+        raise HTTPException(status_code=404, detail="not a markdown file")
+    try:
+        html, mode = await render_path(abs_path)
+    except Exception as e:
+        return Response(content=f"render error: {e}", status_code=500, media_type="text/plain")
+    return Response(content=html, media_type="text/html", headers={"X-Render-Mode": mode})
+
+
 # ----- Entrypoint -----
 
 def main() -> None:

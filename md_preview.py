@@ -494,7 +494,9 @@ def main() -> None:
         url = f"http://{display_host}:{args.port}/"
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # timeout_graceful_shutdown=0: don't wait for long-lived SSE connections
+    # to drain on Ctrl+C — release the port immediately.
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", timeout_graceful_shutdown=0)
 
 
 # ============================================================================

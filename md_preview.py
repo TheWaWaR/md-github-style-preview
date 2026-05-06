@@ -201,6 +201,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
+# ----- SSE broadcast -----
+
+# Set of asyncio.Queue instances, one per active /events connection.
+SSE_CLIENTS: set[asyncio.Queue] = set()
+
+
+def broadcast(event: dict) -> None:
+    """Push an event to every active SSE client. Must be called from the loop thread."""
+    dead = []
+    for q in list(SSE_CLIENTS):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            dead.append(q)
+    for q in dead:
+        SSE_CLIENTS.discard(q)
+
+
 # ----- Routes: index and file enumeration -----
 
 INDEX_TEMPLATE = """<!doctype html>
@@ -316,6 +334,27 @@ async def raw(path: str) -> Response:
     except Exception as e:
         return Response(content=f"render error: {e}", status_code=500, media_type="text/plain")
     return Response(content=html, media_type="text/html", headers={"X-Render-Mode": mode})
+
+
+@app.get("/events")
+async def events(request: Request) -> StreamingResponse:
+    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+    SSE_CLIENTS.add(queue)
+
+    async def gen():
+        try:
+            while True:
+                try:
+                    evt = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(evt)}\n\n"
+                except asyncio.TimeoutError:
+                    # Keepalive: doubles as disconnect detector — yielding to a
+                    # closed connection raises and unwinds into the finally block.
+                    yield ": keepalive\n\n"
+        finally:
+            SSE_CLIENTS.discard(queue)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.get("/assets/{path:path}")

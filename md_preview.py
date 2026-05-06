@@ -85,9 +85,53 @@ def list_markdown_files() -> list[str]:
 app = FastAPI()
 
 
+# ----- Routes: index and file enumeration -----
+
+INDEX_TEMPLATE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>md-preview</title>
+<link rel="stylesheet" href="/static/github-markdown.css">
+<style>
+  body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }}
+  h1 {{ font-size: 1.4rem; }}
+  ul {{ list-style: none; padding: 0; }}
+  li {{ padding: 0.3rem 0; }}
+  a {{ text-decoration: none; color: #0366d6; }}
+  a:hover {{ text-decoration: underline; }}
+</style>
+</head><body>
+<h1>Markdown files in <code>{root}</code></h1>
+<ul id="filelist">
+{items}
+</ul>
+<script>
+  const es = new EventSource('/events');
+  es.addEventListener('message', (e) => {{
+    const evt = JSON.parse(e.data);
+    if (evt.event === 'created' || evt.event === 'deleted') {{
+      fetch('/files').then(r => r.json()).then(({{files}}) => {{
+        const ul = document.getElementById('filelist');
+        ul.innerHTML = files.map(f =>
+          `<li><a href="/view/${{f}}">${{f}}</a></li>`).join('');
+      }});
+    }}
+  }});
+</script>
+</body></html>
+"""
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
-    return "<h1>md-preview: hello</h1>"
+    files = list_markdown_files()
+    items = "\n".join(f'<li><a href="/view/{f}">{f}</a></li>' for f in files) or "<li><em>(no markdown files)</em></li>"
+    return INDEX_TEMPLATE.format(root=str(ROOT), items=items)
+
+
+@app.get("/files")
+async def files_json() -> JSONResponse:
+    return JSONResponse({"files": list_markdown_files()})
 
 
 # ----- Entrypoint -----

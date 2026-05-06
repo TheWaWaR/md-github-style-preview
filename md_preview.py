@@ -80,6 +80,30 @@ def list_markdown_files() -> list[str]:
     return out
 
 
+# ----- Renderer: local fallback -----
+
+LOCAL_MD_EXTENSIONS = [
+    "extra",            # also pulls in tables, fenced_code, etc.
+    "codehilite",       # pygments-based code block highlighting
+    "pymdownx.tilde",   # ~~strikethrough~~
+    "pymdownx.tasklist",
+]
+LOCAL_MD_EXT_CONFIGS = {
+    "codehilite": {"guess_lang": False, "css_class": "highlight"},
+    "pymdownx.tasklist": {"custom_checkbox": True},
+}
+
+
+def render_local(text: str) -> str:
+    """Render markdown to HTML using the local `markdown` library."""
+    return md_lib.markdown(
+        text,
+        extensions=LOCAL_MD_EXTENSIONS,
+        extension_configs=LOCAL_MD_EXT_CONFIGS,
+        output_format="html5",
+    )
+
+
 # ----- FastAPI app -----
 
 app = FastAPI()

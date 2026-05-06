@@ -318,6 +318,15 @@ async def raw(path: str) -> Response:
     return Response(content=html, media_type="text/html", headers={"X-Render-Mode": mode})
 
 
+@app.get("/assets/{path:path}")
+async def assets(path: str) -> Response:
+    abs_path = safe_resolve(path)
+    if not abs_path.is_file():
+        raise HTTPException(status_code=404, detail="not a file")
+    mime, _ = mimetypes.guess_type(str(abs_path))
+    return Response(content=abs_path.read_bytes(), media_type=mime or "application/octet-stream")
+
+
 # ----- Entrypoint -----
 
 def main() -> None:

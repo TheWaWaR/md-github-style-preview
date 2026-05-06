@@ -187,12 +187,23 @@ def invalidate_cache_for(abs_path: Path) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: client first (used by render()); observer comes in Task 11
+    # Startup, in this order:
+    # 1. Capture loop ref (must precede observer.start so events have a loop to dispatch to)
+    loop = asyncio.get_running_loop()
+    # 2. httpx client
     STATE.client = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+    # 3. Observer
+    handler = MarkdownWatcher(loop)
+    observer = Observer()
+    observer.schedule(handler, str(ROOT), recursive=True)
+    observer.start()
+
     try:
         yield
     finally:
         # Shutdown
+        observer.stop()
+        observer.join(timeout=5)
         if STATE.client is not None:
             await STATE.client.aclose()
             STATE.client = None
@@ -217,6 +228,77 @@ def broadcast(event: dict) -> None:
             dead.append(q)
     for q in dead:
         SSE_CLIENTS.discard(q)
+
+
+# ----- File watcher -----
+
+DEBOUNCE_S = 1.0
+
+
+class MarkdownWatcher(FileSystemEventHandler):
+    """Watches ROOT recursively. Coalesces events per path with a 1s debounce.
+
+    Runs on watchdog's worker thread; bridges to the asyncio loop via
+    loop.call_soon_threadsafe(_dispatch, ...).
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self._loop = loop
+        self._timers: dict[str, threading.Timer] = {}  # rel_posix -> Timer
+        self._latest: dict[str, str] = {}              # rel_posix -> latest event_type
+        self._lock = threading.Lock()
+
+    def on_modified(self, event):
+        if event.is_directory: return
+        self._record(event.src_path, "modified")
+
+    def on_created(self, event):
+        if event.is_directory: return
+        self._record(event.src_path, "created")
+
+    def on_deleted(self, event):
+        if event.is_directory: return
+        self._record(event.src_path, "deleted")
+
+    def on_moved(self, event):
+        if event.is_directory: return
+        # Decompose into deleted(src) + created(dest); SSE schema has no "moved".
+        self._record(event.src_path, "deleted")
+        self._record(getattr(event, "dest_path", event.src_path), "created")
+
+    def _record(self, raw_path: str, event_type: str) -> None:
+        try:
+            p = Path(raw_path).resolve()
+            if not is_markdown(p):
+                return
+            try:
+                rel = to_rel_posix(p)
+            except ValueError:
+                # File no longer under ROOT (e.g. moved out of tree)
+                return
+        except Exception:
+            return
+
+        with self._lock:
+            self._latest[rel] = event_type
+            existing = self._timers.pop(rel, None)
+            if existing is not None:
+                existing.cancel()
+            t = threading.Timer(DEBOUNCE_S, self._fire, args=(rel, p))
+            self._timers[rel] = t
+            t.start()
+
+    def _fire(self, rel: str, abs_path: Path) -> None:
+        with self._lock:
+            event_type = self._latest.pop(rel, "modified")
+            self._timers.pop(rel, None)
+        # Hand off to the loop thread.
+        self._loop.call_soon_threadsafe(self._dispatch, rel, abs_path, event_type)
+
+    def _dispatch(self, rel: str, abs_path: Path, event_type: str) -> None:
+        # Runs on the asyncio loop thread.
+        invalidate_cache_for(abs_path)
+        broadcast({"path": rel, "event": event_type})
 
 
 # ----- Routes: index and file enumeration -----

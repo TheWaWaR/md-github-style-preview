@@ -128,7 +128,7 @@ async def _render_via_api(text: str) -> str:
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    r = await STATE.client.post(GITHUB_API_URL, json={"text": text, "mode": "gfm"}, headers=headers)
+    r = await STATE.client.post(GITHUB_API_URL, json={"text": text, "mode": "markdown"}, headers=headers)
     if r.status_code in (403, 429):
         STATE.cooldown_until = time.monotonic() + COOLDOWN_RATE_LIMIT_S
         raise httpx.HTTPStatusError("rate limited", request=r.request, response=r)

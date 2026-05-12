@@ -361,23 +361,35 @@ VIEW_TEMPLATE = """<!doctype html>
   #banner {{ position: fixed; top: 0; left: 0; right: 0; padding: 0.5rem 1rem;
              background: #fff8c5; border-bottom: 1px solid #d4a72c; display: none; }}
   #banner button {{ float: right; background: none; border: none; cursor: pointer; }}
+  #banner #banner-refresh {{ float: none; padding: 0; margin-left: 0.5rem;
+                             color: #0366d6; text-decoration: underline; }}
 </style>
 </head><body>
-<div id="banner"><span id="banner-text"></span><button onclick="document.getElementById('banner').style.display='none'">×</button></div>
+<div id="banner">
+  <span id="banner-text"></span>
+  <button id="banner-refresh" type="button" onclick="refresh()">refresh</button>
+  <button type="button" onclick="document.getElementById('banner').style.display='none'">×</button>
+</div>
 <article id="content" class="markdown-body">{html}</article>
 <script>
   const PATH = {path_json};
   const article = document.getElementById('content');
   const banner = document.getElementById('banner');
   const bannerText = document.getElementById('banner-text');
+  const bannerRefresh = document.getElementById('banner-refresh');
 
-  function showBanner(msg) {{ bannerText.textContent = msg; banner.style.display = 'block'; }}
+  function showBanner(msg, withRefresh) {{
+    bannerText.textContent = msg;
+    bannerRefresh.style.display = withRefresh ? '' : 'none';
+    banner.style.display = 'block';
+  }}
 
   async function refresh() {{
+    banner.style.display = 'none';
     const r = await fetch('/raw/' + PATH);
     if (!r.ok) {{ article.innerHTML = '<p>Render error: ' + r.status + '</p>'; return; }}
     const mode = r.headers.get('X-Render-Mode');
-    if (mode === 'local') showBanner('API rate-limited, using local renderer');
+    if (mode === 'local') showBanner('API rate-limited, using local renderer', false);
     const scrollY = window.scrollY;
     article.innerHTML = await r.text();
     window.scrollTo(0, scrollY);
@@ -386,7 +398,9 @@ VIEW_TEMPLATE = """<!doctype html>
   const es = new EventSource('/events');
   es.addEventListener('message', (e) => {{
     const evt = JSON.parse(e.data);
-    if (evt.path === PATH && evt.event === 'modified') refresh();
+    if (evt.path === PATH && evt.event === 'modified') {{
+      showBanner('File changed — click to re-render', true);
+    }}
   }});
 </script>
 </body></html>

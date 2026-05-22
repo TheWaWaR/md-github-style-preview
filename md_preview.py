@@ -306,7 +306,7 @@ class MarkdownWatcher(FileSystemEventHandler):
 INDEX_TEMPLATE = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<title>md-preview</title>
+<title>{root}</title>
 <link rel="stylesheet" href="/static/github-markdown.css">
 <style>
   body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }}
@@ -414,7 +414,7 @@ async def view(path: str) -> str:
         raise HTTPException(status_code=404, detail="not a markdown file")
     html, mode = await render_path(abs_path)
     return VIEW_TEMPLATE.format(
-        title=path,
+        title=PurePosixPath(path).name,
         html=html,
         path_json=json.dumps(path),
     )

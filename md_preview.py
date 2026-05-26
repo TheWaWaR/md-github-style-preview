@@ -469,18 +469,22 @@ async def github_markdown_css() -> Response:
 
 # ----- Entrypoint -----
 
-def _check_port_available(host: str, port: int) -> None:
-    """Probe-bind so we can fail fast with a friendly message before uvicorn starts.
+def _bind_listen_socket(host: str, port: int) -> "socket.socket":
+    """Bind the listening socket ourselves and hand it to uvicorn.
 
-    Uvicorn catches the bind OSError internally and prints its own ERROR log,
-    so we can't catch it from `uvicorn.run()`. There's a tiny TOCTOU window
-    between this probe and uvicorn's real bind, acceptable for a local dev tool.
+    Doing the bind here (instead of letting uvicorn.run do it) buys us a
+    friendly error on conflict — uvicorn would otherwise just log an opaque
+    ERROR and sys.exit. SO_REUSEADDR matches uvicorn's own socket option;
+    without it macOS rejects the bind when a prior run's SSE connections are
+    still in TIME_WAIT on the same port.
     """
     import socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        s.bind((host, port))
+        sock.bind((host, port))
     except OSError as e:
+        sock.close()
         if getattr(e, "errno", None) in (48, 98) or "address already in use" in str(e).lower():
             print(
                 f"error: port {port} is already in use; pass --port to choose another",
@@ -488,8 +492,8 @@ def _check_port_available(host: str, port: int) -> None:
             )
             sys.exit(1)
         raise
-    finally:
-        s.close()
+    sock.set_inheritable(True)
+    return sock
 
 
 def main() -> None:
@@ -500,17 +504,20 @@ def main() -> None:
         print(f"error: {ROOT} is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    _check_port_available(args.host, args.port)
+    sock = _bind_listen_socket(args.host, args.port)
+    display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    url = f"http://{display_host}:{args.port}/"
+    # uvicorn suppresses its "Uvicorn running on ..." log when we hand it sockets.
+    print(f"Serving on {url}", flush=True)
 
-    # Browser auto-open: 0.5s delay so uvicorn has time to bind.
+    # Browser auto-open: 0.5s delay so uvicorn has time to listen.
     if not args.no_browser:
-        display_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
-        url = f"http://{display_host}:{args.port}/"
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
     # timeout_graceful_shutdown=0: don't wait for long-lived SSE connections
     # to drain on Ctrl+C — release the port immediately.
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", timeout_graceful_shutdown=0)
+    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info", timeout_graceful_shutdown=0)
+    uvicorn.Server(config).run(sockets=[sock])
 
 
 # ============================================================================
